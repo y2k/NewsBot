@@ -25,15 +25,6 @@ module Domain =
         |> fun x -> if x.Success then Some x.Value else None
         |> Option.map Uri
 
-    let mkMessage (updates : RawMessage list) =
-        updates
-        |> List.choose ^ fun (RawMessage x) -> findUrl x |> Option.map ^ fun y -> x, y
-        |> List.groupBy ^ fun (_, x) -> x
-        |> List.map ^ fun (url, xs) -> fst xs.[0], url
-        |> List.map ^ fun (x, _) -> sprintf "%s" x
-        |> List.fold (sprintf "%s- %s\n") ""
-        |> fun x -> if String.IsNullOrEmpty x then None else Some x
-
     let update db message =
         match findUrl message with
         | Some url ->
@@ -44,6 +35,15 @@ module Domain =
             if exists then db
             else { db with newMessages = { text = message; url = url } :: db.newMessages }
         | None -> db
+
+    let private mkMessage (updates : RawMessage list) =
+        updates
+        |> List.choose ^ fun (RawMessage x) -> findUrl x |> Option.map ^ fun y -> x, y
+        |> List.groupBy ^ fun (_, x) -> x
+        |> List.map ^ fun (url, xs) -> fst xs.[0], url
+        |> List.map ^ fun (x, _) -> sprintf "%s" x
+        |> List.fold (sprintf "%s- %s\n") ""
+        |> fun x -> if String.IsNullOrEmpty x then None else Some x
 
     let mkMesssage db =
         let message =
