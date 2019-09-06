@@ -1,76 +1,36 @@
 module SlackParser
 
-let private (>>-) a f = async.Bind(a, fun x -> async.Return <| f x)
-let private (>>-!) t f = (Async.AwaitTask t) >>- f
+open System
+open SlackAPI
 
-module private Slack =
-    open System
-    open SlackAPI
+let inline (^) f x = f x
+let inline (>>-) a f = async.Bind(a, fun x -> async.Return ^ f x)
+let inline (>>-!) t f = (Async.AwaitTask t) >>- f
 
-    type SlackChannel =
-        { channel_id : string
-          name : string
-          num_members : int
-          purpose : string }
+type SlackConfig =
+    { userId : string
+      password : string }
 
-    type Message =
-        { text : string
-          user : string
-          ts : string }
+let private getSlackMessages (client : SlackTaskClient) name from = async {
+    let! channels = client.GetChannelListAsync() |> Async.AwaitTask
+    let channel = channels.channels |> Array.tryFind ^ fun channel -> channel.name = name
+    return!
+        match channel with
+        | None -> async.Return [||]
+        | Some id ->
+            client.GetChannelHistoryAsync(id, count = Nullable 30, oldest = Nullable from)
+            >>-! fun x -> x.messages }
 
-    let private userId = lazy (Environment.GetEnvironmentVariable "SLACK_API_USERID")
-    let private password = lazy (Environment.GetEnvironmentVariable "SLACK_API_PASSWORD")
-    let private cachedClient : SlackTaskClient option ref = ref None
+let startReadingUpdates cfg name f = async {
+    let! client =
+        SlackClientHelpers().AuthSigninAsync(cfg.userId, "T09229ZC6", cfg.password)
+        >>-! fun response -> SlackTaskClient response.token
 
-    let private makeClient = async {
-        match !cachedClient with
-        | Some client -> return client
-        | None ->
-            let! response =
-                SlackClientHelpers().AuthSigninAsync(userId.Value, "T09229ZC6", password.Value)
-                |> Async.AwaitTask
-            let x = SlackTaskClient response.token
-            cachedClient := Some x
-            return x }
+    let from = ref DateTime.Now
 
-    let getSlackChannels = async {
-        let! client = makeClient
-        let! channels = client.GetChannelListAsync() |> Async.AwaitTask
-
-        return
-            channels.channels
-            |> Array.map (fun x -> { channel_id = x.id
-                                     name = x.name
-                                     num_members = x.num_members
-                                     purpose = "" })
-            |> Array.toList }
-
-    let getSlackMessages name = async {
-        let! client = makeClient
-        let! channels = client.GetChannelListAsync() |> Async.AwaitTask
-
-        let id =
-            channels.channels
-            |> Array.tryFind (fun x -> x.name = name)
-
-        let! history =
-            match id with
-            | None -> async.Return [||]
-            | Some id ->
-                client.GetChannelHistoryAsync(id, count = Nullable 10)
-                >>-! fun x -> x.messages
-
-        return
-            history
-            |> Array.map (fun x ->
-                { text = x.text
-                  user = x.username
-                  ts = string x.ts.Ticks })
-            |> Array.toList }
-
-let startReadingUpdates name f = async {
     while true do
-        let! messages = Slack.getSlackMessages name
+        let! messages = getSlackMessages client name !from
+        from := messages |> Array.map (fun x -> x.ts) |> Array.max
         for m in messages do
-            do! f m.text 
+            do! f m.text
         do! Async.Sleep 30_000 }
