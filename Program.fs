@@ -4,6 +4,45 @@ let inline (^) f x = f x
 let inline (>>-) a f = async.Bind(a, fun x -> async.Return ^ f x)
 let inline (>>-!) t f = (Async.AwaitTask t) >>- f
 
+module Domain =
+    open System.Text.RegularExpressions
+
+    type Message = { text : string; url : Uri }
+    type Database = { newMessages : Message list; sended : Message list }
+    type RawMessage = RawMessage of string
+
+    let private findUrl (text : string) : Uri option =
+        Regex.Match(text, "https://[^\" ]+")
+        |> fun x -> if x.Success then Some x.Value else None
+        |> Option.map Uri
+
+    let update db message =
+        match findUrl message with
+        | Some url ->
+            let exists =
+                db.newMessages
+                |> List.append db.sended
+                |> List.exists ^ fun x -> x.url = url
+            if exists then db
+            else { db with newMessages = { text = message; url = url } :: db.newMessages }
+        | None -> db
+
+    let private mkMessage' (updates : RawMessage list) =
+        updates
+        |> List.choose ^ fun (RawMessage x) -> findUrl x |> Option.map ^ fun y -> x, y
+        |> List.groupBy snd
+        |> List.map ^ fun (url, xs) -> fst xs.[0], url
+        |> List.map ^ fun (x, _) -> sprintf "%s" x
+        |> List.fold (sprintf "%s- %s\n") ""
+        |> fun x -> if String.IsNullOrEmpty x then None else Some x
+
+    let mkMessage db =
+        let message =
+            db.newMessages
+            |> List.map ^ fun x -> RawMessage x.text
+            |> mkMessage'
+        { db with newMessages = []; sended = db.newMessages @ db.sended }, message
+
 module SlackParser =
     open SlackAPI
 
@@ -35,47 +74,9 @@ module SlackParser =
                 do f m.text
             do! Async.Sleep 30_000 }
 
-type Message = { text : string; url : Uri }
-type Database = { newMessages : Message list; sended : Message list }
-type RawMessage = RawMessage of string
-
-module Domain =
-    open System.Text.RegularExpressions
-
-    let private findUrl (text : string) : Uri option =
-        Regex.Match(text, "https://[^\" ]+")
-        |> fun x -> if x.Success then Some x.Value else None
-        |> Option.map Uri
-
-    let update db message =
-        match findUrl message with
-        | Some url ->
-            let exists =
-                db.newMessages
-                |> List.append db.sended
-                |> List.exists ^ fun x -> x.url = url
-            if exists then db
-            else { db with newMessages = { text = message; url = url } :: db.newMessages }
-        | None -> db
-
-    let private mkMessage' (updates : RawMessage list) =
-        updates
-        |> List.choose ^ fun (RawMessage x) -> findUrl x |> Option.map ^ fun y -> x, y
-        |> List.groupBy ^ fun (_, x) -> x
-        |> List.map ^ fun (url, xs) -> fst xs.[0], url
-        |> List.map ^ fun (x, _) -> sprintf "%s" x
-        |> List.fold (sprintf "%s- %s\n") ""
-        |> fun x -> if String.IsNullOrEmpty x then None else Some x
-
-    let mkMessage db =
-        let message =
-            db.newMessages
-            |> List.map ^ fun x -> RawMessage x.text
-            |> mkMessage'
-        { db with newMessages = []; sended = db.newMessages @ db.sended }, message
-
 module Store =
     open System.Threading
+    open Domain
     
     let private store = ref { newMessages = []; sended = [] }
 
