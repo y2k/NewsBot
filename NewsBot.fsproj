@@ -10,6 +10,8 @@
   </ItemGroup>
 
   <ItemGroup>
+    <PackageReference Include="Prelude" Version="0.2.3" />
+    <PackageReference Include="Prelude.Atom" Version="0.1.0" />
     <PackageReference Include="SlackApi" Version="1.1.2" />
     <PackageReference Include="Telegram.Bot" Version="15.0.0" />
   </ItemGroup>

@@ -1,9 +1,5 @@
 ﻿open System
 
-let inline (^) f x = f x
-let inline (>>-) a f = async.Bind(a, fun x -> async.Return ^ f x)
-let inline (>>-!) t f = (Async.AwaitTask t) >>- f
-
 module Domain =
     open System.Text.RegularExpressions
 
@@ -16,7 +12,7 @@ module Domain =
         |> fun x -> if x.Success then Some x.Value else None
         |> Option.map Uri
 
-    let update db message =
+    let saveMessagesFromSlack db message =
         match findUrl message with
         | Some url ->
             let exists =
@@ -46,19 +42,16 @@ module Domain =
 module SlackParser =
     open SlackAPI
 
-    type SlackConfig =
-        { userId : string
-          password : string }
+    type SlackConfig = { userId : string; password : string }
 
     let private getSlackMessages (client : SlackTaskClient) name from = async {
         let! channels = client.GetChannelListAsync() |> Async.AwaitTask
-        let channel = channels.channels |> Array.tryFind ^ fun channel -> channel.name = name
         return!
-            match channel with
-            | None -> async.Return [||]
-            | Some id ->
-                client.GetChannelHistoryAsync(id, count = Nullable 30, oldest = Nullable from)
-                >>-! fun x -> x.messages }
+            channels.channels
+            |> Array.tryFind ^ fun channel -> channel.name = name
+            |> Option.defaultWith ^ fun _ -> failwithf "Can' find channel '%s'" name
+            |> fun id -> client.GetChannelHistoryAsync(id, count = Nullable 30, oldest = Nullable from)
+            >>-! fun x -> x.messages }
 
     let startReadingUpdates cfg name f = async {
         let! client =
@@ -69,24 +62,21 @@ module SlackParser =
 
         while true do
             let! messages = getSlackMessages client name !from
-            from := messages |> Array.map (fun x -> x.ts) |> Array.max
+
+            if not ^ Array.isEmpty messages then
+                messages |> Array.map (fun x -> x.text) |> printfn "LOGX (%s) :: %A" name 
+
+            from := 
+                messages 
+                |> Array.map (fun x -> x.ts) 
+                |> Array.sortDescending 
+                |> Array.tryHead
+                |> Option.defaultValue !from
             for m in messages do
                 do f m.text
             do! Async.Sleep 30_000 }
 
-module Store =
-    open System.Threading
-    open Domain
-    
-    let private store = ref { newMessages = []; sended = [] }
-
-    let rec dispatch f = 
-        let currentValue = !store
-        let (newValue, result') = f currentValue
-        let result = Interlocked.CompareExchange(store, newValue, currentValue)
-        if obj.ReferenceEquals(result, currentValue) then result'
-        else Thread.SpinWait 20; dispatch f
-    let update f = dispatch ^ fun db -> f db, ()
+let Store = Atom.atom ({ Domain.Database.newMessages = []; Domain.Database.sended = [] })
 
 open Telegram.Bot.Types
 
@@ -101,12 +91,12 @@ let main _ =
     let listenSlack tag =
         SlackParser.startReadingUpdates cfg.slack tag
             ^ fun message ->
-                Store.update ^ fun db -> Domain.update db message
+                Store.update ^ fun db -> Domain.saveMessagesFromSlack db message
 
     let sendToTelegram = async {
         while true do
             let optMsg = Store.dispatch Domain.mkMessage
-
+            optMsg |> Option.iter ^ printfn "Telegram msg: %O"
             do! optMsg
                 |> Option.map ^ fun msg ->
                     let bot = Telegram.Bot.TelegramBotClient cfg.token
@@ -117,6 +107,10 @@ let main _ =
 
     Async.Parallel
         [ sendToTelegram
+          listenSlack "getting-started"
+          listenSlack "android"
+          listenSlack "random"
+          listenSlack "general"
           listenSlack "compose"
           listenSlack "feed" ]
     |> Async.RunSynchronously |> ignore
